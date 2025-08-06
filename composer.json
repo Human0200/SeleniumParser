@@ -1,0 +1,12 @@
+{
+  "name": "root/selenium-parser",
+  "type": "project",
+  "autoload": {
+    "psr-4": {
+      "Root\\SeleniumParser\\": "src/"
+    }
+  },
+  "require": {
+    "php-webdriver/webdriver": "^1.15"
+  }
+}
