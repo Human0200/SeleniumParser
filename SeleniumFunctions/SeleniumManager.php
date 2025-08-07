@@ -1,5 +1,7 @@
 <?php
+
 namespace SeleniumFunctions;
+
 ini_set('display_errors', '1');
 ini_set('display_startup_errors', '1');
 error_reporting(E_ALL);
@@ -47,7 +49,6 @@ class SeleniumManager
                 // Создаем новую сессию
                 $this->createNewSession();
                 return $this->driver;
-
             } catch (Exception $e) {
                 $attempt++;
                 sleep(2);
@@ -133,7 +134,6 @@ class SeleniumManager
             // Способ 2: Стандартный getPageSource
             $html = $this->driver->getPageSource();
             return $html;
-
         } catch (Exception $e) {
             // Способ 3: Резервный вариант через file_get_contents
             $directContent = @file_get_contents($url);
@@ -184,81 +184,115 @@ class SeleniumManager
     }
 
     /**
-     * Получает информацию о текущих сессиях
+     * Получает информацию о текущих сессиях через Selenium Grid/Standalone API
      */
     public function getSessionsInfo()
     {
-        $selenium_host = "http://localhost:4444";
-        $url = $selenium_host . "/wd/hub/sessions";
+        try {
+            // Новый API endpoint для Selenium 4+
+            $selenium_host = "http://localhost:4444"; // или ваш SERVER_URL
+            $url = $selenium_host . "/status";
 
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'Content-Type: application/json',
+                'Accept: application/json'
+            ]);
 
-        $response = curl_exec($ch);
+            $response = curl_exec($ch);
 
-        if ($response === false) {
-            return ["status" => "error", "message" => "Ошибка получения сессий: " . curl_error($ch)];
-        }
+            if ($response === false) {
+                return [
+                    "status" => "error",
+                    "message" => "Ошибка получения статуса: " . curl_error($ch)
+                ];
+            }
 
-        $response_data = json_decode($response, true);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
 
-        if (isset($response_data['value']) && is_array($response_data['value'])) {
+            if ($httpCode !== 200) {
+                return [
+                    "status" => "error",
+                    "message" => "Сервер вернул код $httpCode",
+                    "response" => $response
+                ];
+            }
+
+            $responseData = json_decode($response, true);
+
+            // Для Selenium 4+ структура ответа изменилась
+            if (isset($responseData['value']['nodes'])) {
+                $sessions = [];
+                foreach ($responseData['value']['nodes'] as $node) {
+                    if (isset($node['slots'])) {
+                        foreach ($node['slots'] as $slot) {
+                            if (isset($slot['session'])) {
+                                $sessions[] = $slot['session'];
+                            }
+                        }
+                    }
+                }
+
+                return [
+                    "status" => "success",
+                    "data" => [
+                        "sessions" => $sessions,
+                        "count" => count($sessions)
+                    ]
+                ];
+            }
+
             return [
                 "status" => "success",
                 "data" => [
-                    "sessions" => $response_data['value'],
-                    "count" => count($response_data['value'])
+                    "sessions" => [],
+                    "count" => 0,
+                    "raw_response" => $responseData
                 ]
             ];
+        } catch (Exception $e) {
+            return [
+                "status" => "error",
+                "message" => "Исключение: " . $e->getMessage()
+            ];
         }
-
-        return ["status" => "success", "data" => ["sessions" => [], "count" => 0]];
     }
 
     /**
      * Выполняет основной сценарий работы
      */
-    public function executeMainScenario(array $requestParams)
-    {
-        try {
-            // Логируем запрос
-            $this->logRequest($requestParams);
-
-            // Получаем параметры
-            $pageURL = $requestParams["PAGE_URL"] ?? MAIN_PAGE;
-            $scroll = $requestParams["SCROLL"] ?? false;
-
-            // Инициализируем драйвер
+public function executeMainScenario(array $requestParams)
+{
+    try {
+        // Проверяем активность сессии
+        if (!$this->driver || !$this->isSessionActive()) {
             $this->initializeWebDriver();
-
-            // Переходим на нужную страницу
-            $currentPage = $this->driver->getCurrentURL();
-            if ($currentPage != $pageURL) {
-                $this->driver->get($pageURL);
-            }
-
-            // Ожидаем загрузки
-            $this->waitForPageLoad();
-
-            // Прокрутка страницы (если нужно)
-            if ($scroll) {
-                $this->scrollPage();
-            }
-
-            // Получаем HTML безопасным способом
-            $html = $this->getPageHtmlSafe($pageURL);
-
-            // Очистка от бинарных данных
-            $html = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $html);
-
-            return $html;
-
-        } catch (Exception $e) {
-            return $this->handleError($e, $pageURL ?? 'undefined');
         }
+
+        $pageURL = $requestParams['PAGE_URL'];
+        $scroll = $requestParams['SCROLL'] ?? false;
+
+        $this->driver->get($pageURL);
+        $this->waitForPageLoad();
+
+        if ($scroll) {
+            $this->scrollPage();
+        }
+
+        $html = $this->getPageHtmlSafe($pageURL);
+        $html = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $html);
+
+        // Возвращаем чистый HTML без JSON обертки
+        return $html;
+
+    } catch (Exception $e) {
+        // Возвращаем строку с ошибкой
+        return "Error: " . $e->getMessage();
     }
+}
 
     /**
      * Ожидает загрузки страницы
@@ -266,9 +300,19 @@ class SeleniumManager
     private function waitForPageLoad(int $timeout = 15)
     {
         $wait = new WebDriverWait($this->driver, $timeout);
-        $wait->until(function($driver) {
+        $wait->until(function ($driver) {
             return $driver->executeScript("return document.readyState === 'complete';");
         });
+    }
+
+    private function isSessionActive(): bool
+    {
+        try {
+            $this->driver->getTitle(); // Простая проверка
+            return true;
+        } catch (Exception $e) {
+            return false;
+        }
     }
 
     /**
