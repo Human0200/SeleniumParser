@@ -2,13 +2,10 @@
 ini_set('display_errors', '1');
 ini_set('display_startup_errors', '1');
 error_reporting(E_ALL);
-
-// Установка таймаутов для WebDriver
-putenv('WEBDRIVER_REMOTE_TIMEOUT=60');
-putenv('WEBDRIVER_REMOTE_CONNECT_TIMEOUT=30');
-
 require 'vendor/autoload.php';
 require_once 'defines.php';
+
+//require 'src/ftp.php';
 
 use Facebook\WebDriver\Remote\RemoteWebDriver;
 use Facebook\WebDriver\Remote\DesiredCapabilities;
@@ -16,168 +13,86 @@ use Facebook\WebDriver\WebDriverBy;
 use Facebook\WebDriver\WebDriverWait;
 use Facebook\WebDriver\WebDriverExpectedCondition;
 
-header('Content-Type: text/html; charset=utf-8');
+// Перед запуском скрипта нужно выполнить в терминале команду для запуска образа докера с webdriver firefox
+// Сначала проверить есть ли запущенный контейнер командой — 'docker ps'
+// Если нет то — 'docker run -d -v /var/www/html/upload:/home/seluser/Downloads -p 4444:4444 -p 7900:7900 --shm-size="2g" selenium/standalone-firefox:4.27.0-20241204'
+//Вот это не менять
 
-/**
- * Создает или восстанавливает сессию WebDriver
- */
-function initializeWebDriver() {
-    $maxRetries = 3;
-    $attempt = 0;
+$pageURL = $_REQUEST["PAGE_URL"] ?? MAIN_PAGE;
+$_REQUEST["TIME"] = date("Y-m-d H:i:s");
+$scroll = $_REQUEST["SCROLL"] ?? false;
 
-    while ($attempt < $maxRetries) {
-        try {
-            // Пытаемся восстановить существующую сессию
-            if (file_exists('session_id.txt')) {
-                $sessionId = file_get_contents('session_id.txt');
-                if (!empty($sessionId)) {
-                    $driver = RemoteWebDriver::createBySessionID($sessionId, SERVER_URL);
-                    // Проверяем активность сессии
-                    $driver->getCurrentUrl();
-                    return $driver;
-                }
-            }
+file_put_contents(date("Y-m-d") . "_requests.txt", print_r($_REQUEST, true), FILE_APPEND);
 
-            // Создаем новую сессию
-            $capabilities = DesiredCapabilities::firefox();
-            $driver = RemoteWebDriver::create(SERVER_URL, $capabilities);
-            file_put_contents('session_id.txt', $driver->getSessionID());
-            return $driver;
 
-        } catch (Exception $e) {
-            $attempt++;
-            sleep(2);
-            // Удаляем нерабочий session_id
-            if (file_exists('session_id.txt')) {
-                unlink('session_id.txt');
-            }
-        }
-    }
-
-    throw new Exception("Не удалось инициализировать WebDriver после $maxRetries попыток");
+$existingSessionId = file_get_contents('session_id.txt');
+if (!$existingSessionId) {
+	echo json_encode([
+		"status" => "error",
+		"message" => "Нет открытой сессии",
+		"data" => []
+	], JSON_UNESCAPED_UNICODE);
+	exit;
 }
 
-/**
- * Безопасное получение HTML страницы
- */
-function getPageHtmlSafe($driver, $url) {
-    try {
-        // Способ 1: Через executeScript с Base64 кодированием
-        $html = $driver->executeScript("
-            try {
-                const html = document.documentElement.outerHTML;
-                return btoa(unescape(encodeURIComponent(html)));
-            } catch(e) {
-                console.error(e);
-                return 'ERROR:' + e.message;
-            }
-        ");
+// Firefox
+$driver = RemoteWebDriver::createBySessionID($existingSessionId, SERVER_URL);
 
-        if (!empty($html) && strpos($html, 'ERROR:') !== 0) {
-            $decoded = base64_decode($html, true);
-            if ($decoded !== false) {
-                return $decoded;
-            }
-        }
-
-        // Способ 2: Стандартный getPageSource
-        $html = $driver->getPageSource();
-        return $html;
-
-    } catch (Exception $e) {
-        // Способ 3: Резервный вариант через file_get_contents
-        $directContent = @file_get_contents($url);
-        if ($directContent !== false) {
-            return $directContent;
-        }
-
-        return "<!-- ERROR: " . htmlspecialchars($e->getMessage()) . " -->";
-    }
-}
-
-// Основной код выполнения
 try {
-    // Получаем параметры
-    $pageURL = $_REQUEST["PAGE_URL"] ?? MAIN_PAGE;
-    $_REQUEST["TIME"] = date("Y-m-d H:i:s");
-    $scroll = $_REQUEST["SCROLL"] ?? false;
+	$currentPage = $driver->getCurrentURL();
+	if ($currentPage != $pageURL) {
+		// Переходим на страницу
+		$driver->get($pageURL);
+	}
 
-    // Логируем запрос
-    file_put_contents(date("Y-m-d") . "_requests.txt", print_r($_REQUEST, true), FILE_APPEND);
+	if ($scroll) {
+		$driver->executeScript("window.scrollTo(0, document.body.scrollHeight);");
+		sleep(10);
+		// Находим все элементы по CSS-селектору
+		$downloadButtonsSelector = "a.tabs__button";
+		$wait = new WebDriverWait($driver, 10); // 10 секунд ожидания
+		$wait->until(WebDriverExpectedCondition::elementToBeClickable(WebDriverBy::cssSelector($downloadButtonsSelector))); // Ждем, пока элемент станет кликабельным
+		$elements = $driver->findElements(WebDriverBy::cssSelector($downloadButtonsSelector));
+		// Прокликаем все найденные элементы
+		$downloadedElements = [];
+		foreach ($elements as $element) {
+			try {
+				$elementDownloadLink = $element->getAttribute("download");
+				if (!$elementDownloadLink) continue;
+				$elementDownloadLink = str_replace("/", "_", $elementDownloadLink);
+				$downloadedElements[] = $elementDownloadLink;
+				exec("docker exec selenium_grid rm -f /home/seluser/Desktop/$elementDownloadLink");
+//				$element->click(); // Кликаем на элемент
+				$driver->executeScript('arguments[0].click();', [$element]);
+				sleep(1);
+			} catch (Exception $e) {
+				echo "Не удалось кликнуть на элемент: " . $e->getMessage() . "\n";
+			}
+		}
+		sleep(4);
+		foreach ($downloadedElements as $elementDownloadLink) {
+			exec("docker cp selenium_grid:/home/seluser/Desktop/$elementDownloadLink /var/www/html/upload/$elementDownloadLink");
+		}
+	}
 
-    // Инициализируем драйвер
-    $driver = initializeWebDriver();
-
-    // Переходим на нужную страницу
-    $currentPage = $driver->getCurrentURL();
-    if ($currentPage != $pageURL) {
-        $driver->get($pageURL);
-    }
-
-    // Ожидаем загрузки
-    $wait = new WebDriverWait($driver, 15);
-    $wait->until(function($driver) {
-        return $driver->executeScript("return document.readyState === 'complete';");
-    });
-
-    // Прокрутка страницы (если нужно)
-    if ($scroll) {
-        $driver->executeScript("window.scrollTo(0, document.body.scrollHeight);");
-        sleep(2);
-
-        // Клики по элементам (если нужно)
-        $elements = $driver->findElements(WebDriverBy::cssSelector("a.tabs__button"));
-        $downloadedElements = [];
-
-        foreach ($elements as $element) {
-            try {
-                $elementDownloadLink = $element->getAttribute("download");
-                if (!$elementDownloadLink) continue;
-
-                $elementDownloadLink = str_replace("/", "_", $elementDownloadLink);
-                $downloadedElements[] = $elementDownloadLink;
-
-                $driver->executeScript('arguments[0].click();', [$element]);
-                sleep(1);
-            } catch (Exception $e) {
-                error_log("Click error: " . $e->getMessage());
-            }
-        }
-    }
-
-    // Получаем HTML безопасным способом
-    $html = getPageHtmlSafe($driver, $pageURL);
-
-    // Очистка от бинарных данных
-    $html = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $html);
-
-    // Вывод результата
-    echo $html;
+	// Ожидаем, пока элемент не появится
+//	$wait = new WebDriverWait($driver, 30);
+//	$wait->until(WebDriverExpectedCondition::visibilityOfElementLocated(WebDriverBy::id('main')));
 
 } catch (Exception $e) {
-    // Обработка ошибок
-    $errorMessage = "Ошибка: " . $e->getMessage();
-    error_log($errorMessage);
-
-    echo json_encode([
-        'status' => 'error',
-        'message' => $errorMessage,
-        'details' => [
-            'url' => $pageURL ?? 'undefined',
-            'time' => date('Y-m-d H:i:s')
-        ]
-    ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-
+	echo json_encode([
+		"status" => "error",
+		"message" => "Ошибка: " . $e->getMessage() . "\n",
+		"data" => []
+	], JSON_UNESCAPED_UNICODE);
+	exit;
 } finally {
-    // Не закрываем сессию явно, чтобы можно было повторно использовать
-    if (isset($driver)) {
-        try {
-            $driver->executeScript("console.log('Session kept alive')");
-        } catch (Exception $e) {
-            // Сессия уже мертва, очищаем файл
-            if (file_exists('session_id.txt')) {
-                unlink('session_id.txt');
-            }
-        }
-    }
+	$html = $driver->getPageSource(); //Вот тут загружается весь html страницы
+	//
+	//$ftp = new FTP();
+	//$ftp->conn('lsleadqn.beget.tech', 'lsleadqn_total', '4nH&0N2g');
+
+//	file_put_contents("test.html", $html);
+	//$ftp->put('/armada.leadspace-tech.ru/public_html/local/parser/krasnodar.html', '/home/seleniumParser/test.html');
 }
+echo $html;
