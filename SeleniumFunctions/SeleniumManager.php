@@ -20,6 +20,7 @@ use Facebook\WebDriver\WebDriverWait;
 use Facebook\WebDriver\WebDriverExpectedCondition;
 use Facebook\WebDriver\Firefox\FirefoxOptions;
 use Exception;
+use RuntimeException;
 
 header('Content-Type: text/html; charset=utf-8');
 
@@ -110,39 +111,88 @@ class SeleniumManager
     /**
      * Безопасное получение HTML страницы
      */
-    public function getPageHtmlSafe($url): string
+    public function getPageHtmlSafe(string $url): string
+    {
+        if (!$this->driver) {
+            throw new RuntimeException("WebDriver not initialized");
+        }
+
+        $maxAttempts = 3;
+        $lastError = null;
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            try {
+
+                $this->driver->get($url);
+
+
+                $this->waitForPageLoad();
+
+
+                $html = $this->getPageHtmlWithRetry();
+
+
+                if ($html && $html !== '') {
+                    return $html;
+                }
+            } catch (Exception $e) {
+                $lastError = $e;
+                sleep(1);
+                continue;
+            }
+        }
+
+
+        try {
+            return $this->fallbackGetPageContent($url);
+        } catch (Exception $e) {
+            throw new RuntimeException(sprintf(
+                "Failed to get page HTML after %d attempts. Last error: %s",
+                $maxAttempts,
+                $lastError ? $lastError->getMessage() : 'Unknown'
+            ));
+        }
+    }
+    private function getPageHtmlWithRetry(): string
     {
         try {
-            // Способ 1: Через executeScript с Base64 кодированием
-            $html = $this->driver->executeScript("
-                try {
-                    const html = document.documentElement.outerHTML;
-                    return btoa(unescape(encodeURIComponent(html)));
-                } catch(e) {
-                    console.error(e);
-                    return 'ERROR:' + e.message;
-                }
-            ");
 
-            if (!empty($html) && strpos($html, 'ERROR:') !== 0) {
-                $decoded = base64_decode($html, true);
-                if ($decoded !== false) {
-                    return $decoded;
-                }
+            $html = $this->driver->executeScript(
+                "return document.documentElement.outerHTML;"
+            );
+
+            if (!empty($html)) {
+                return $html;
             }
-
-            // Способ 2: Стандартный getPageSource
-            $html = $this->driver->getPageSource();
-            return $html;
         } catch (Exception $e) {
-            // Способ 3: Резервный вариант через file_get_contents
-            $directContent = @file_get_contents($url);
-            if ($directContent !== false) {
-                return $directContent;
-            }
-
-            return "<!-- ERROR: " . htmlspecialchars($e->getMessage()) . " -->";
+            error_log("executeScript failed: " . $e->getMessage());
         }
+
+
+        return $this->driver->getPageSource();
+    }
+
+    private function fallbackGetPageContent(string $url): string
+    {
+        $context = stream_context_create([
+            'http' => [
+                'ignore_errors' => true,
+                'timeout' => 10,
+                'header' => "User-Agent: Mozilla/5.0\r\n"
+            ],
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false
+            ]
+        ]);
+
+        $content = @file_get_contents($url, false, $context);
+
+        if ($content === false) {
+            throw new RuntimeException("Fallback method also failed");
+        }
+
+        return $content;
     }
 
     /**
@@ -264,35 +314,34 @@ class SeleniumManager
     /**
      * Выполняет основной сценарий работы
      */
-public function executeMainScenario(array $requestParams)
-{
-    try {
-        // Проверяем активность сессии
-        if (!$this->driver || !$this->isSessionActive()) {
-            $this->initializeWebDriver();
+    public function executeMainScenario(array $requestParams)
+    {
+        try {
+            // Проверяем активность сессии
+            if (!$this->driver || !$this->isSessionActive()) {
+                $this->initializeWebDriver();
+            }
+
+            $pageURL = $requestParams['PAGE_URL'];
+            $scroll = $requestParams['SCROLL'] ?? false;
+
+            $this->driver->get($pageURL);
+            $this->waitForPageLoad();
+
+            if ($scroll) {
+                $this->scrollPage();
+            }
+
+            $html = $this->getPageHtmlSafe($pageURL);
+            $html = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $html);
+
+            // Возвращаем чистый HTML без JSON обертки
+            return $html;
+        } catch (Exception $e) {
+            // Возвращаем строку с ошибкой
+            return "Error: " . $e->getMessage();
         }
-
-        $pageURL = $requestParams['PAGE_URL'];
-        $scroll = $requestParams['SCROLL'] ?? false;
-
-        $this->driver->get($pageURL);
-        $this->waitForPageLoad();
-
-        if ($scroll) {
-            $this->scrollPage();
-        }
-
-        $html = $this->getPageHtmlSafe($pageURL);
-        $html = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $html);
-
-        // Возвращаем чистый HTML без JSON обертки
-        return $html;
-
-    } catch (Exception $e) {
-        // Возвращаем строку с ошибкой
-        return "Error: " . $e->getMessage();
     }
-}
 
     /**
      * Ожидает загрузки страницы
