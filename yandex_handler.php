@@ -206,15 +206,16 @@ try {
     ], JSON_UNESCAPED_UNICODE);
 }
 
+/**
+ * Парсит информацию о компании из HTML (без Symfony DomCrawler)
+ */
 function parseCompanyInfo($html) {
     // Сохраняем HTML для отладки
     file_put_contents(__DIR__ . '/debug_company.html', $html);
     
-    $crawler = new \Symfony\Component\DomCrawler\Crawler($html);
-    
     $info = [
         'name' => '',
-        'rating' => '5',
+        'rating' => '5.0',
         'full_stars' => 0,
         'half_stars' => 0,
         'empty_stars' => 0,
@@ -222,109 +223,89 @@ function parseCompanyInfo($html) {
         'count_marks' => '0'
     ];
 
-    // Название - более широкий поиск
+    // Создаем DOMDocument
+    $dom = new DOMDocument();
+    libxml_use_internal_errors(true);
+    $dom->loadHTML(mb_convert_encoding($html, 'HTML-ENTITIES', 'UTF-8'));
+    libxml_clear_errors();
+    
+    $xpath = new DOMXPath($dom);
+
+    // Название компании
     $nameSelectors = [
-        'h1.orgpage-header-view__header',
-        'h1.card-title-view__title', 
-        'h1',
-        '.orgpage-header-view__header',
-        '.card-title-view__title',
-        '[data-org-name]'
+        '//h1[contains(@class, "orgpage-header-view__header")]',
+        '//h1[contains(@class, "card-title-view__title")]', 
+        '//h1',
+        '//*[@data-org-name]',
+        '//*[contains(@class, "orgpage-header-view__header")]'
     ];
     
     foreach ($nameSelectors as $selector) {
-        try {
-            if ($crawler->filter($selector)->count() > 0) {
-                $name = trim($crawler->filter($selector)->text());
-                if ($name) {
-                    $info['name'] = $name;
-                    break;
-                }
+        $nodes = $xpath->query($selector);
+        if ($nodes->length > 0) {
+            $name = trim($nodes->item(0)->textContent);
+            if ($name) {
+                $info['name'] = $name;
+                break;
             }
-        } catch (Exception $e) {
-            continue;
         }
     }
 
     // Рейтинг
     $ratingSelectors = [
-        'div.business-summary-rating-badge-view__rating',
-        '.business-rating-badge-view__rating-text',
-        '.rating-value',
-        '.business-rating-view__rating'
+        '//*[contains(@class, "business-summary-rating-badge-view__rating")]',
+        '//*[contains(@class, "business-rating-badge-view__rating-text")]',
+        '//*[contains(@class, "rating-value")]',
+        '//*[contains(@class, "business-rating-view__rating")]'
     ];
     
     foreach ($ratingSelectors as $selector) {
-        try {
-            if ($crawler->filter($selector)->count() > 0) {
-                $ratingText = trim($crawler->filter($selector)->text());
-                $rating = preg_replace('/[^0-9,\.]+/', '', $ratingText);
-                if ($rating) {
-                    $info['rating'] = $rating;
-                    break;
-                }
+        $nodes = $xpath->query($selector);
+        if ($nodes->length > 0) {
+            $ratingText = trim($nodes->item(0)->textContent);
+            $rating = preg_replace('/[^0-9,\.]+/', '', $ratingText);
+            if ($rating) {
+                $info['rating'] = str_replace(',', '.', $rating);
+                break;
             }
-        } catch (Exception $e) {
-            continue;
         }
     }
 
     // Звезды
-    try {
-        $info['full_stars'] = $crawler->filter('.business-rating-badge-view__star._full, .business-summary-rating-badge-view__stars .business-rating-badge-view__star._full')->count();
-        $info['half_stars'] = $crawler->filter('.business-rating-badge-view__star._half, .business-summary-rating-badge-view__stars .business-rating-badge-view__star._half')->count();
-        $info['empty_stars'] = $crawler->filter('.business-rating-badge-view__star._empty, .business-summary-rating-badge-view__stars .business-rating-badge-view__star._empty')->count();
-    } catch (Exception $e) {
-        // Игнорируем ошибки со звездами
-    }
-
-    // Количество отзывов
-    $reviewSelectors = [
-        '.card-section-header__title',
-        '.reviews-section-title',
-        '.section-header-title'
-    ];
+    $fullStars = $xpath->query('//*[contains(@class, "business-rating-badge-view__star") and contains(@class, "_full")]');
+    $halfStars = $xpath->query('//*[contains(@class, "business-rating-badge-view__star") and contains(@class, "_half")]');
+    $emptyStars = $xpath->query('//*[contains(@class, "business-rating-badge-view__star") and contains(@class, "_empty")]');
     
-    foreach ($reviewSelectors as $selector) {
-        try {
-            if ($crawler->filter($selector)->count() > 0) {
-                $reviewsText = trim($crawler->filter($selector)->text());
-                $count = preg_replace('/[^0-9]+/', '', $reviewsText);
-                if ($count) {
-                    $info['count_reviews'] = $count;
-                    break;
-                }
-            }
-        } catch (Exception $e) {
-            continue;
-        }
-    }
+    $info['full_stars'] = $fullStars->length;
+    $info['half_stars'] = $halfStars->length;
+    $info['empty_stars'] = $emptyStars->length;
 
-    // Количество оценок
-    $markSelectors = [
-        '.business-rating-amount-view._summary',
-        '.business-rating-amount-view',
-        '.reviews-count'
-    ];
+    // Количество отзывов и оценок - ищем числа в тексте
+    preg_match_all('/(\d+)\s*отзыв/ui', $html, $reviewMatches);
+    if (!empty($reviewMatches[1])) {
+        $info['count_reviews'] = $reviewMatches[1][0];
+    }
     
-    foreach ($markSelectors as $selector) {
-        try {
-            if ($crawler->filter($selector)->count() > 0) {
-                $marksText = trim($crawler->filter($selector)->text());
-                $count = preg_replace('/[^0-9]+/', '', $marksText);
-                if ($count) {
-                    $info['count_marks'] = $count;
-                    break;
-                }
-            }
-        } catch (Exception $e) {
-            continue;
-        }
+    preg_match_all('/(\d+)\s*оценк/ui', $html, $markMatches);
+    if (!empty($markMatches[1])) {
+        $info['count_marks'] = $markMatches[1][0];
+    }
+    
+    // Дополнительный поиск в тексте страницы
+    if (preg_match('/reviewsCount["\']:\s*(\d+)/i', $html, $matches)) {
+        $info['count_reviews'] = $matches[1];
+    }
+    
+    if (preg_match('/ratingsCount["\']:\s*(\d+)/i', $html, $matches)) {
+        $info['count_marks'] = $matches[1];
     }
 
     return $info;
 }
 
+/**
+ * Парсит отзывы из JSON
+ */
 function parseReviews($html) {
     $jsonData = json_decode($html, true);
     
@@ -364,6 +345,9 @@ function parseReviews($html) {
     return $reviews;
 }
 
+/**
+ * Кодирует эмодзи в HTML сущности
+ */
 function encodeEmojis($text) {
     $ranges = [
         '/[\x{1F600}-\x{1F64F}]/u',
@@ -381,3 +365,4 @@ function encodeEmojis($text) {
 
     return trim(str_replace(["\0", "\x00"], '', $text));
 }
+?>
