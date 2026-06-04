@@ -492,7 +492,9 @@ function extractReviewsFromApiV2($data)
 
 function getRussianDate($timestamp) {
     $months = [1 => 'января', 2 => 'февраля', 3 => 'марта', 4 => 'апреля', 5 => 'мая', 6 => 'июня', 7 => 'июля', 8 => 'августа', 9 => 'сентября', 10 => 'октября', 11 => 'ноября', 12 => 'декабря'];
-    return date('j', $timestamp) . ' ' . $months[date('n', $timestamp)];
+    $year = date('Y', $timestamp);
+    $suffix = ($year == date('Y')) ? '' : ' ' . $year . ' года';
+    return date('j', $timestamp) . ' ' . $months[date('n', $timestamp)] . $suffix;
 }
 
 function encodeEmojisForDatabase($text) {

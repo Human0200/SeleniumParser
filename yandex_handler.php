@@ -337,7 +337,7 @@ function parseReviews($html) {
                 'https://avatars.mds.yandex.net/get-yapic/' . $review['author']['pic'] . '/islands-68' : '',
             'rating' => $review['rating']['val'] ?? 5,
             'timestamp' => isset($review['time']) ? intval($review['time'] / 1000) : time(),
-            'readable_date' => date('j F', intval(($review['time'] ?? time() * 1000) / 1000)),
+            'readable_date' => (function($ts) { $m = [1=>'января',2=>'февраля',3=>'марта',4=>'апреля',5=>'мая',6=>'июня',7=>'июля',8=>'августа',9=>'сентября',10=>'октября',11=>'ноября',12=>'декабря']; $y = date('Y', $ts); $suffix = ($y == date('Y')) ? '' : ' ' . $y . ' года'; return date('j', $ts) . ' ' . $m[date('n', $ts)] . $suffix; })(intval(($review['time'] ?? time() * 1000) / 1000)),
             'description' => encodeEmojis($review['text'] ?? ''),
         ];
     }
