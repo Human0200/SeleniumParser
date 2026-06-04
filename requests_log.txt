@@ -1,0 +1,30 @@
+Array
+(
+    [time] => 2025-08-06 12:00:06
+    [PAGE_URL] => https://go.2gis.com/xF8h0
+    [SCROLL] => 1
+)
+Array
+(
+    [time] => 2025-08-06 12:01:58
+    [PAGE_URL] => https://go.2gis.com/xF8h0
+    [SCROLL] => 1
+)
+Array
+(
+    [time] => 2025-08-06 12:10:36
+    [PAGE_URL] => https://go.2gis.com/xF8h0
+    [SCROLL] => 1
+)
+Array
+(
+    [time] => 2025-08-06 12:11:25
+    [PAGE_URL] => https://go.2gis.com/xF8h0
+    [SCROLL] => 1
+)
+Array
+(
+    [time] => 2025-08-06 12:15:31
+    [PAGE_URL] => https://go.2gis.com/xF8h0
+    [SCROLL] => 1
+)
